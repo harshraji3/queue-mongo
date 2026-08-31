@@ -59,8 +59,8 @@ function displayDepth(depth) {
   return level < MAX_DISPLAY_DEPTH ? level : MAX_DISPLAY_DEPTH;
 }
 
-app.storageQueue('storageQueueTriggerPostAndCommentMongo', {
-    queueName: 'conversation-posts-mongodb-v1',
+app.storageQueue('storageQueueTriggerDeletePostAndCommentMongo', {
+    queueName: 'conversation-delete-post-mongodb-v1',
     connection: 'likequeuetestv1_STORAGE',
     handler: async (message, context) => {
         context.log('Queue item received:', message);
@@ -72,61 +72,43 @@ app.storageQueue('storageQueueTriggerPostAndCommentMongo', {
 
             const payload = parseMessage(message);
 
-            if (!payload ) {
+            if (!payload || !payload.post_id) {
                 context.warn('Skipping message with no post_id:', payload);
                 return;
             }
 
+            const postId = payload.post_id;
+
             console.log('Parsed payload:', payload);
-            const { event, parent_post_id: parentPostId, ...doc } = payload;
-            console.log('Doc without event field:', doc);
-            
-            let position = null;
-            if (parentPostId) {
-                const parent = await postsModel
-                    .findOne({ _id: parentPostId, status: 1 }, { user_id: 1, depth: 1, root_post_id: 1 })
-                    .lean();
-                if (!parent) return context.res.status(404).send("Post being replied to was not found");
-
-                position = resolveReplyPosition(parent);
-                Object.assign(doc, position);
+            const post = await postsModel
+                .findOne({ _id: postId }, { user_id: 1, status: 1, parent_post_id: 1, root_post_id: 1 })
+                .lean();
+            if (!post) {
+                context.warn('Post cannot be found');
+                return;
             }
-            
-            const created = await postsModel.create(doc);
+            if (String(post.user_id) !== String(payload.user_id)) {
+                context.warn('You can delete only your post');
+                return;
+            }
 
-            if (position) {
+            // `status: 1` is the guard: concurrent deletes both return 200, but only
+            // one matches, so counters move exactly once
+            const result = await postsModel.updateOne(
+                { _id: postId, status: 1 },
+                { $set: { status: 0, deleted_at: new Date() }, $currentDate: { version: true } },
+            );
+
+            if (result.modifiedCount > 0 && post.parent_post_id){
                 await adjustResponseCounts({
-                    postId: created._id,
-                    parentPostId: position.parent_post_id,
-                    rootPostId: position.root_post_id,
-                    delta: 1,
-                });
+                    postId: postId,
+                    parentPostId: post.parent_post_id,
+                    rootPostId: post.root_post_id,
+                    delta: -1,
+                })
             }
-            // built from the write plus one author lookup: a read straight after an
-            // insert can miss on the secondary-reading regions
-            const userId = doc.user_id;
-            const author = await authorProjection(userId);
-            const { active_bookmarks, ...post } = created.toObject();
-
-            context.log('Post written to MongoDB successfully:', {
-                post_id: post._id,
-                parent_post_id: post.parent_post_id || null,
-                root_post_id: post.root_post_id || null,
-                display_depth: displayDepth(post.depth),
-                author_id: author ? author._id : null,
-            });
-
-            return {
-                success: true,
-                message: 'Post created successfully',
-                post: {
-                    ...post,
-                    user_id: author || null,
-                    display_depth: displayDepth(post.depth),
-                    liked_by_me: false,
-                    bookmarked_by_me: false,
-                },
-            };
+            
+            
         } catch (err) {
             context.error('Error writing post to MongoDB:', err);
             throw err;

@@ -1,4 +1,17 @@
 const mongoose = require("mongoose");
+
+// Required for their side effect only: each registers a model that a `ref`
+// below points at. Mongoose resolves a ref by NAME at populate() time, not at
+// schema-definition time, so a ref to an unregistered model is silent until
+// something populates that path and then throws MissingSchemaError mid-request.
+// Registering them here means requiring `users` is enough to populate any of
+// its paths - no caller has to know which side files to pull in.
+require("./userSpecialities");
+require("./userAreasOfInterest");
+require("./cancerGroups");
+// Still unregistered, and populating any of them will throw: user_access_types,
+// sponsors_v2, legal_documents. No schema for them exists in this repo yet.
+
 let Schema = mongoose.Schema;
 
 const usersSchema = new Schema(
