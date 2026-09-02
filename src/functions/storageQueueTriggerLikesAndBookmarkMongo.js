@@ -67,60 +67,64 @@ async function applyReaction(payload, reaction, context) {
     return toggleReaction({ joinModel, postId, userId, counterField, cacheField, on });
 }
 
-app.storageQueue('storageQueueTriggerLikesAndBookmarkMongo', {
-    queueName: 'conversation-likes-mongodb-v1',
-    connection: 'likequeuetestv1_STORAGE',
-    handler: async (message, context) => {
-        context.log('Queue item received:', message);
+// app.storageQueue('storageQueueTriggerLikesAndBookmarkMongo', {
+//     queueName: 'conversation-likes-mongodb-v1',
+//     connection: 'likequeuetestv1_STORAGE',
+//     handler: async (message, context) => {
+//         context.log('Queue item received:', message);
 
-        // Queue delivery happens before the first message arrives in a cold
-        // worker, so kick the watcher off here - it only starts once.
-        // await startWatchingLikes(
-        //     (...args) => context.log(...args),
-        //     (...args) => context.error(...args)
-        // );
+//         // Queue delivery happens before the first message arrives in a cold
+//         // worker, so kick the watcher off here - it only starts once.
+//         // await startWatchingLikes(
+//         //     (...args) => context.log(...args),
+//         //     (...args) => context.error(...args)
+//         // );
 
-        let payload;
-        try {
-            payload = parseMessage(message);
-        } catch (err) {
-            // Unparseable message will never parse on a retry - drop it.
-            context.error('Skipping message that is not valid JSON:', err.message);
-            return;
-        }
+//         let payload;
+//         try {
+//             payload = parseMessage(message);
+//         } catch (err) {
+//             // Unparseable message will never parse on a retry - drop it.
+//             context.error('Skipping message that is not valid JSON:', err.message);
+//             return;
+//         }
 
-        const reaction = payload && REACTIONS[payload.event];
-        if (!reaction) {
-            context.warn(`Skipping message with unknown event "${payload?.event}":`, payload);
-            return;
-        }
+//         const reaction = payload && REACTIONS[payload.event];
+//         if (!reaction) {
+//             context.warn(`Skipping message with unknown event "${payload?.event}":`, payload);
+//             return;
+//         }
 
-        // Bad ids are poison: retrying five times and dead-lettering them adds
-        // nothing, so log and drop.
-        if (!mongoose.Types.ObjectId.isValid(payload.post_id)) {
-            context.warn('Skipping message with invalid post_id:', payload);
-            return;
-        }
-        if (!mongoose.Types.ObjectId.isValid(payload.user_id)) {
-            context.warn('Skipping message with invalid user_id:', payload);
-            return;
-        }
+//         // Bad ids are poison: retrying five times and dead-lettering them adds
+//         // nothing, so log and drop.
+//         if (!mongoose.Types.ObjectId.isValid(payload.post_id)) {
+//             context.warn('Skipping message with invalid post_id:', payload);
+//             return;
+//         }
+//         if (!mongoose.Types.ObjectId.isValid(payload.user_id)) {
+//             context.warn('Skipping message with invalid user_id:', payload);
+//             return;
+//         }
 
-        try {
-            await connectMongo();
+//         try {
+//             await connectMongo();
 
-            const result = await applyReaction(payload, reaction, context);
-            if (!result) return;
+//             // const result = await applyReaction(payload, reaction, context);
+//             // if (!result) return;
 
-            context.log(
-                `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
-                `${reaction.flagName}=${result.active} ${reaction.counterField}=${result.count}`
-            );
-        } catch (err) {
-            // Anything left here is transient (Mongo unreachable, write
-            // conflict) - rethrow so the queue redelivers the message.
-            context.error('Error applying like event to MongoDB:', err);
-            throw err;
-        }
-    },
-});
+//             // context.log(
+//             //     `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
+//             //     `${reaction.flagName}=${result.active} ${reaction.counterField}=${result.count}`
+//             // );
+//         } catch (err) {
+//             // Anything left here is transient (Mongo unreachable, write
+//             // conflict) - rethrow so the queue redelivers the message.
+//             context.error('Error applying like event to MongoDB:', err);
+//             throw err;
+//         }
+//     },
+// });
+
+// Shared with storageQueueTriggerPostAndCommentMongo, which handles the same
+// reaction events when they arrive on the post/comment queue.
+module.exports = { applyReaction, REACTIONS };
