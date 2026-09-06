@@ -8,6 +8,7 @@ const {
   REACTIONS,
 } = require("./storageQueueTriggerLikesAndBookmarkMongo");
 const { deletePost } = require("./storageQueueTriggerDeletePostAndCommentMongo")
+const { applyPollVote } = require("./storageQueueTriggerPollVoteKv")
 
 // Derivation of a post's stored fields from the request. See
 // docs/ONCOCOMMUNITY_PHASE2.md for why each rule is what it is.
@@ -226,6 +227,29 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           const deleteresult = deletePost(payload);
           context.log("result after delete", deleteresult);
           break;
+
+        case "poll.vote": {
+          // Bad ids are poison here too: retrying cannot make them valid.
+          const ids = ["poll_id", "option_id", "user_id"];
+          const invalid = ids.find(
+            (field) => !mongoose.Types.ObjectId.isValid(payload[field]),
+          );
+          if (invalid) {
+            context.warn(`Skipping poll.vote with invalid ${invalid}:`, payload);
+            return;
+          }
+
+          const vote = await applyPollVote(payload, context);
+          if (!vote) {
+            context.warn(`Skipping poll.vote with vote issue ${vote}:`, payload);
+            return;
+          }
+          context.log(
+            `Stored poll vote for user ${vote.key} on poll ${vote.vote.poll_id}:`,
+            `option_id=${vote.vote.option_id} edit=${vote.vote.edit}`,
+          );
+          break;
+        }
         default:
           context.warn("Skipping message with unsupported event:", payload.event);
           return;

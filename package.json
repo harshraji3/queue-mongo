@@ -9,6 +9,7 @@
   "dependencies": {
     "@azure/functions": "^4.0.0",
     "@azure/storage-queue": "^12.31.0",
+    "cloudflare": "^7.1.0",
     "mongodb": "^7.5.0",
     "mongoose": "^9.9.4"
   },
