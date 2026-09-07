@@ -8,7 +8,7 @@ const {
   REACTIONS,
 } = require("./storageQueueTriggerLikesAndBookmarkMongo");
 const { deletePost } = require("./storageQueueTriggerDeletePostAndCommentMongo")
-const { applyPollVote } = require("./storageQueueTriggerPollVoteKv")
+const { applyPollVote } = require("./storageQueueTriggerPollVoteMongo")
 
 // Derivation of a post's stored fields from the request. See
 // docs/ONCOCOMMUNITY_PHASE2.md for why each rule is what it is.
@@ -229,9 +229,10 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           break;
 
         case "poll.vote": {
-          // Bad ids are poison here too: retrying cannot make them valid.
-          const ids = ["poll_id", "option_id", "user_id"];
-          const invalid = ids.find(
+          // Bad ids are poison here too: retrying cannot make them valid. The
+          // option ids are checked inside applyPollVote, which also has to
+          // verify they belong to the poll.
+          const invalid = ["poll_id", "user_id"].find(
             (field) => !mongoose.Types.ObjectId.isValid(payload[field]),
           );
           if (invalid) {
@@ -240,13 +241,13 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           }
 
           const vote = await applyPollVote(payload, context);
-          if (!vote) {
-            context.warn(`Skipping poll.vote with vote issue ${vote}:`, payload);
-            return;
-          }
+          // A null means applyPollVote already logged why it declined to write
+          // (unchanged ballot, edit cap reached, unknown poll or option).
+          if (!vote) return;
           context.log(
-            `Stored poll vote for user ${vote.key} on poll ${vote.vote.poll_id}:`,
-            `option_id=${vote.vote.option_id} edit=${vote.vote.edit}`,
+            `Stored poll vote for user ${vote.user_id} on poll ${vote.poll_id}:`,
+            `selected_options=[${vote.selected_options.join(", ")}]`,
+            `edited_count=${vote.edited_count} added=${vote.added.length} removed=${vote.removed.length}`,
           );
           break;
         }
