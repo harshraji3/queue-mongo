@@ -3,12 +3,14 @@ const mongoose = require("mongoose");
 const { connectMongo } = require("../mongo");
 const postsModel = require("../models/communityPosts");
 const usersModel = require("../models/users");
+const { applyReaction, REACTIONS } = require("./storageQueueTriggerLikesAndBookmarkMongo");
+const { deletePost } = require("./storageQueueTriggerDeletePostAndCommentMongo");
+const { applyPollVote } = require("./storageQueueTriggerPollVoteMongo");
 const {
-  applyReaction,
-  REACTIONS,
-} = require("./storageQueueTriggerLikesAndBookmarkMongo");
-const { deletePost } = require("./storageQueueTriggerDeletePostAndCommentMongo")
-const { applyPollVote } = require("./storageQueueTriggerPollVoteMongo")
+  addInterest,
+  removeInterest,
+  readInterestAction,
+} = require("./storageQueueTriggerConversationsInterestMongo");
 
 // Derivation of a post's stored fields from the request. See
 // docs/ONCOCOMMUNITY_PHASE2.md for why each rule is what it is.
@@ -49,22 +51,14 @@ function resolveReplyPosition(parent) {
     depth: (parent.depth || 0) + 1,
   };
 }
-async function adjustResponseCounts({
-  postId,
-  parentPostId,
-  rootPostId,
-  delta,
-}) {
+async function adjustResponseCounts({ postId, parentPostId, rootPostId, delta }) {
   const self = postId ? String(postId) : null;
-  const ids = [
-    ...new Set([parentPostId, rootPostId].filter(Boolean).map(String)),
-  ].filter((id) => id !== self);
+  const ids = [...new Set([parentPostId, rootPostId].filter(Boolean).map(String))].filter(
+    (id) => id !== self,
+  );
   if (!ids.length) return;
 
-  const filter =
-    delta > 0
-      ? { _id: { $in: ids } }
-      : { _id: { $in: ids }, responses_count: { $gt: 0 } };
+  const filter = delta > 0 ? { _id: { $in: ids } } : { _id: { $in: ids }, responses_count: { $gt: 0 } };
   await postsModel.updateMany(filter, { $inc: { responses_count: delta } });
 }
 
@@ -84,16 +78,13 @@ function displayDepth(depth) {
 
 async function resolveMentions(raw) {
   if (!Array.isArray(raw) || !raw.length) return [];
-  const ids = [
-    ...new Set(
-      raw.filter((id) => mongoose.Types.ObjectId.isValid(id)).map(String),
-    ),
-  ].slice(0, MAX_MENTIONS);
+  const ids = [...new Set(raw.filter((id) => mongoose.Types.ObjectId.isValid(id)).map(String))].slice(
+    0,
+    MAX_MENTIONS,
+  );
   if (!ids.length) return [];
 
-  const found = await usersModel
-    .find({ _id: { $in: ids }, status: 1 }, { _id: 1 })
-    .lean();
+  const found = await usersModel.find({ _id: { $in: ids }, status: 1 }, { _id: 1 }).lean();
   return found.map((u) => u._id);
 }
 
@@ -131,7 +122,6 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
       switch (payload.event) {
         case "post.create":
         case "comment.create":
-
           console.log("Parsed payload:", payload);
           const { event, parent_post_id: parentPostId, ...items } = payload;
           console.log("Doc without event field:", items);
@@ -152,15 +142,9 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           let position = null;
           if (parentPostId) {
             const parent = await postsModel
-              .findOne(
-                { _id: parentPostId, status: 1 },
-                { user_id: 1, depth: 1, root_post_id: 1 },
-              )
+              .findOne({ _id: parentPostId, status: 1 }, { user_id: 1, depth: 1, root_post_id: 1 })
               .lean();
-            if (!parent)
-              return context.res
-                .status(404)
-                .send("Post being replied to was not found");
+            if (!parent) return context.res.status(404).send("Post being replied to was not found");
 
             position = resolveReplyPosition(parent);
             Object.assign(doc, position);
@@ -203,27 +187,27 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           // Bad ids are poison: retrying five times and dead-lettering them adds
           // nothing, so log and drop.
           if (!mongoose.Types.ObjectId.isValid(payload.post_id)) {
-              context.warn('Skipping message with invalid post_id:', payload);
-              return;
+            context.warn("Skipping message with invalid post_id:", payload);
+            return;
           }
           if (!mongoose.Types.ObjectId.isValid(payload.user_id)) {
-              context.warn('Skipping message with invalid user_id:', payload);
-              return;
+            context.warn("Skipping message with invalid user_id:", payload);
+            return;
           }
 
           const result = await applyReaction(payload, reaction, context);
           if (!result) return;
           context.log(
-                `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
-                `${reaction.flagName}=${result.active} ${reaction.counterField}=${result.count}`
+            `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
+            `${reaction.flagName}=${result.active} ${reaction.counterField}=${result.count}`,
           );
           break;
-        
+
         case "post.delete":
           if (!payload || !payload.post_id) {
-                context.warn('Skipping message with no post_id:', payload);
-                return;
-            }
+            context.warn("Skipping message with no post_id:", payload);
+            return;
+          }
           const deleteresult = deletePost(payload);
           context.log("result after delete", deleteresult);
           break;
@@ -248,6 +232,50 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
             `Stored poll vote for user ${vote.user_id} on poll ${vote.poll_id}:`,
             `selected_options=[${vote.selected_options.join(", ")}]`,
             `edited_count=${vote.edited_count} added=${vote.added.length} removed=${vote.removed.length}`,
+          );
+          break;
+        }
+        // The "found interesting" reaction on a Conversations (Explore) post.
+        // A different pair of collections from the community like above -
+        // conversations_post_likes and conversations_posts_v1 - so it gets its
+        // own writer rather than another entry in REACTIONS.
+        case "explore.interest.create":
+        case "explore.interest.delete":
+        case "explore.interest": {
+          // Bad ids and an undecidable direction are both poison: no retry can
+          // make an invalid ObjectId valid, or tell us whether the user was
+          // reacting or un-reacting.
+          const badId = ["post_id", "user_id"].find(
+            (field) => !mongoose.Types.ObjectId.isValid(payload[field]),
+          );
+          if (badId) {
+            context.warn(`Skipping ${payload.event} with invalid ${badId}:`, payload);
+            return;
+          }
+
+          const on = readInterestAction(payload);
+          if (on === null) {
+            context.warn(
+              `Skipping ${payload.event} that names neither create nor delete:`,
+              payload,
+            );
+            return;
+          }
+
+          // Two writers, not one toggle: the directions share this message
+          // shape but not a write path.
+          const interest = on
+            ? await addInterest(payload, context)
+            : await removeInterest(payload, context);
+          // A null means the writer already logged why it declined to write
+          // (the post is gone or removed).
+          if (!interest) return;
+          // A null count is a write that changed nothing, so no update handed
+          // one back - and re-reading it just to log it is a query for nothing.
+          context.log(
+            `Applied ${payload.event} for user ${payload.user_id} on conversations post ${payload.post_id}:`,
+            `interested=${interest.active} changed=${interest.changed}`,
+            `users_interested_count=${interest.count ?? "unchanged"}`,
           );
           break;
         }
