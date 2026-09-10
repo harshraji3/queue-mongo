@@ -1,7 +1,46 @@
 const mongoose = require('mongoose');
 
-const connectionString = process.env.MONGODB_CONNECTION_STRING;
-const dbName = process.env.MONGODB_DB_NAME || 'myDatabase';
+// The credentials arrive as three separate settings rather than one URI so the
+// password can be rotated on its own and never has to be pasted inside a
+// larger string. MONGO_URI holds only the host part of the address (plus any
+// query it needs), e.g. `my-cluster.abcde.mongodb.net`.
+const username = process.env.MONGO_USERNAME;
+const password = process.env.MONGO_PASSWORD;
+const host = process.env.MONGO_URI;
+const dbName = process.env.MONGODB_DB_NAME || 'oncopilot-dev';
+
+// Names the settings that are missing, so a misconfigured deployment says which
+// one rather than just failing to connect.
+function missingSettings() {
+    return [
+        ['MONGO_USERNAME', username],
+        ['MONGO_PASSWORD', password],
+        ['MONGO_URI', host],
+    ]
+        .filter(([, value]) => !value)
+        .map(([name]) => name);
+}
+
+// The username and password are percent-encoded because they are credentials
+// going into a URI: an unescaped `@`, `:` or `/` in a password would otherwise
+// be read as URI punctuation and silently point the driver somewhere else. The
+// host is normalised so a value that was pasted with the scheme or a trailing
+// slash still builds a valid string.
+function buildConnectionString() {
+    const user = encodeURIComponent(username);
+    const pass = encodeURIComponent(password);
+
+    const [address, query] = host
+        .replace(/^mongodb(\+srv)?:\/\//, '')
+        .split('?');
+
+    return (
+        `mongodb+srv://${user}:${pass}@${address.replace(/\/+$/, '')}/` +
+        (query ? `?${query}` : '')
+    );
+}
+
+const connectionString = missingSettings().length ? null : buildConnectionString();
 
 // A ping costs a round trip, so it is not worth doing on every message when
 // messages arrive in bursts. Anything younger than this is trusted as live.
@@ -51,7 +90,7 @@ function dial(previous) {
 // redialing only when the existing one is actually gone.
 async function connectMongo() {
     if (!connectionString) {
-        throw new Error('MONGODB_CONNECTION_STRING is not set');
+        throw new Error(`${missingSettings().join(', ')} is not set`);
     }
 
     if (!connectionPromise) {
@@ -105,7 +144,9 @@ if (connectionString) {
         console.error('[mongo] initial connection failed:', err.message)
     );
 } else {
-    console.error('[mongo] MONGODB_CONNECTION_STRING is not set - skipping connect');
+    console.error(
+        `[mongo] ${missingSettings().join(', ')} is not set - skipping connect`
+    );
 }
 
 module.exports = { connectMongo, dbName };
