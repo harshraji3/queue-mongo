@@ -1,11 +1,9 @@
 var mongoose = require("mongoose");
 var Schema = mongoose.Schema;
 
-// Same schema the API owns (node-productG-service-v1/src/models/conversationsPostLikes.js) —
-// this consumer writes the same collection, so the two definitions must not drift.
-//
-// Tracks which user liked ("found interesting") which conversations post.
-// Used to render liked posts on a user's profile.
+// Copy of the API's schema (node-productG-service-v1) - same collection, must
+// not drift. Tracks which user liked ("found interesting") which conversations
+// post; used to render liked posts on a user's profile.
 var ConversationsPostLikesSchema = new Schema(
   {
     user_id: {

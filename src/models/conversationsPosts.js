@@ -1,12 +1,10 @@
 var mongoose = require("mongoose");
 var Schema = mongoose.Schema;
 
-// Same schema the API owns (node-productG-service-v1/src/models/conversationsPosts.js) —
-// this consumer writes the same collection, so the two definitions must not drift.
-//
-// Required for its side effect only: it registers the model `dol_id` refs by
-// name, so requiring this file is enough to populate that path instead of
-// throwing MissingSchemaError mid-message. Same reasoning as models/users.js.
+// Copy of the API's schema (node-productG-service-v1) - same collection, must
+// not drift. The require is for its side effect: it registers the model
+// `dol_id` refs by name, so populating that path cannot throw
+// MissingSchemaError mid-message. Same reasoning as models/users.js.
 require("./conversationsDol");
 
 var ConversationsPostsSchema = new Schema(
@@ -26,19 +24,10 @@ var ConversationsPostsSchema = new Schema(
     content_type: { type: String },
     // free-form tags for categorising / filtering posts
     tags: [{ type: String }],
-    // Curated taxonomy, owned entirely by the admin team and typed in the CMS.
-    //
-    // Free-text string arrays, deliberately NOT refs and deliberately NOT
-    // validated against the drugs / genes / cancer collections: these values are
-    // not derived from existing data and are not kept in sync with it. Nothing
-    // here resolves to another document, so a value that exists nowhere else is
-    // valid. Same shape as news_updates.cancers/biomarkers/products and
-    // experts_profile.cancers/biomarkers.
-    //
-    // The filter option lists users see are aggregated from these fields
-    // themselves (ConversationsController.getFilterOptions), so consistent
-    // spelling/casing by the admin team is what keeps the filters clean — there
-    // is no vocabulary collection to enforce it.
+    // Curated taxonomy, typed by the admin team in the CMS. Free text, not refs
+    // and not validated against any collection, so a value that exists nowhere
+    // else is valid. The user-facing filter lists are aggregated from these
+    // fields themselves, so consistent spelling is all that keeps them clean.
     cancer_types: [{ type: String, trim: true }],
     biomarkers: [{ type: String, trim: true }],
     products: [{ type: String, trim: true }],
