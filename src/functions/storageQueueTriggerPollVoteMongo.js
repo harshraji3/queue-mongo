@@ -18,6 +18,14 @@ const pollVotesModel = require("../models/communityPollVotes");
 // counters move by diffing the old selection against the new one rather than
 // just incrementing.
 //
+// Neither collection carries a `version` token like community_posts does. Every
+// write here is a single `updateOne` on a single document, and MongoDB
+// serialises those, so ordering between concurrent writers needs no optimistic
+// token. What the filters guard is *repetition*, not ordering: `$ne` /
+// `expected` keep an at-least-once redelivery from counting the same vote
+// twice. Set-shaped writes (`$addToSet` below) are repeat-safe by themselves;
+// `$inc` never is, so wherever a counter moves, a filter has to gate it.
+//
 // The cost of the copy: `voters` grows by one entry per voter inside the poll
 // document, so a poll shares one 16MB BSON budget across all of them. At
 // roughly 90 bytes an entry that is on the order of 150k voters - fine for a
@@ -89,13 +97,26 @@ function diffSelections(from, to) {
   };
 }
 
-// A first vote: append the voter and move the counts in the same update, so a
+// A first vote: add the voter and move the counts in the same update, so a
 // voter entry never exists without its votes having been counted.
 //
-// `voters.user_id: { $ne: ... }` is what makes this safe to retry. The queue
-// delivers at least once and the ballot insert may already have succeeded on an
-// earlier attempt, so without the guard a redelivery would append a second
-// entry for the same voter and count their vote twice.
+// `$addToSet`, not `$push`: `voters` is a set keyed by user, so the write says
+// so rather than relying on the filter alone to keep it one. It can express
+// that because PollVoterSchema is `{ _id: false }` (communityPolls.js:39) - with
+// a generated `_id` every entry would be distinct and `$addToSet` would degrade
+// into `$push`. MongoDB applies the whole update under one document-level lock,
+// so concurrent first votes serialise here with no read-compare-write and no
+// version token to carry.
+//
+// The `$ne` filter still has to stay, and not as a duplicate of `$addToSet`:
+// it is what gates the `$inc`. `$addToSet` skips an entry it already holds, but
+// a sibling `$inc` in the same update applies regardless - there is no
+// "increment only if the set grew" - so dropping the filter would leave a
+// redelivery adding no entry and still counting the vote a second time.
+//
+// It also gates a case `$addToSet` cannot see: dedupe compares the entire
+// subdocument, and `voted_at` is the attempt's own clock, so a redelivery
+// arrives with a different timestamp and is not a duplicate by value.
 async function recordFreshVoter({ pollId, userId, selected, now }) {
   const { inc, arrayFilters } = buildCounterDiff({
     added: selected,
@@ -105,7 +126,7 @@ async function recordFreshVoter({ pollId, userId, selected, now }) {
 
   const result = await pollsModel.updateOne(
     { _id: pollId, "voters.user_id": { $ne: toObjectId(userId) } },
-    { $inc: inc, $push: { voters: voterEntry({ userId, selected, now }) } },
+    { $inc: inc, $addToSet: { voters: voterEntry({ userId, selected, now }) } },
     { arrayFilters },
   );
   return result.modifiedCount > 0;
