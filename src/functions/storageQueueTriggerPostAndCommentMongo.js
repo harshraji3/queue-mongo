@@ -167,7 +167,7 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           const author = await authorProjection(userId);
           const { active_bookmarks, ...post } = created.toObject();
 
-          context.log("Post written to MongoDB successfully:", {
+          console.log("Post written to MongoDB successfully:", {
             post_id: post._id,
             parent_post_id: post.parent_post_id || null,
             root_post_id: post.root_post_id || null,
@@ -182,17 +182,17 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
         case "bookmark.delete":
           const reaction = payload && REACTIONS[payload.event];
           if (!reaction) {
-            context.warn(`Skipping message with unknown event "${payload?.event}":`, payload);
+            console.error(`Skipping message with unknown event "${payload?.event}":`, payload);
             return;
           }
           // Bad ids are poison: retrying five times and dead-lettering them adds
           // nothing, so log and drop.
           if (!mongoose.Types.ObjectId.isValid(payload.post_id)) {
-            context.warn("Skipping message with invalid post_id:", payload);
+            console.error("Skipping message with invalid post_id:", payload);
             return;
           }
           if (!mongoose.Types.ObjectId.isValid(payload.user_id)) {
-            context.warn("Skipping message with invalid user_id:", payload);
+            console.error("Skipping message with invalid user_id:", payload);
             return;
           }
 
@@ -203,14 +203,14 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           // A null is a post that is gone or removed - addReaction has already
           // put the row back the way it found it, so there is nothing to retry.
           if (!result) {
-            context.warn(
+            console.error(
               `Post ${payload.post_id} not found or removed - dropped ${payload.event}.`,
             );
             return;
           }
           // A null count is a write that changed nothing, so no update handed
           // one back - and re-reading it just to log it is a query for nothing.
-          context.log(
+          console.log(
             `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
             `${reaction.flagName}=${result.active} changed=${result.changed}`,
             `${reaction.counterField}=${result.count ?? "unchanged"}`,
@@ -219,11 +219,11 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
 
         case "post.delete":
           if (!payload || !payload.post_id) {
-            context.warn("Skipping message with no post_id:", payload);
+            console.error("Skipping message with no post_id:", payload);
             return;
           }
           const deleteresult = deletePost(payload);
-          context.log("result after delete", deleteresult);
+          console.log("result after delete", deleteresult);
           break;
 
         case "poll.vote": {
@@ -234,7 +234,7 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
             (field) => !mongoose.Types.ObjectId.isValid(payload[field]),
           );
           if (invalid) {
-            context.warn(`Skipping poll.vote with invalid ${invalid}:`, payload);
+            console.error(`Skipping poll.vote with invalid ${invalid}:`, payload);
             return;
           }
 
@@ -242,7 +242,7 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           // A null means applyPollVote already logged why it declined to write
           // (unchanged ballot, edit cap reached, unknown poll or option).
           if (!vote) return;
-          context.log(
+          console.log(
             `Stored poll vote for user ${vote.user_id} on poll ${vote.poll_id}:`,
             `selected_options=[${vote.selected_options.join(", ")}]`,
             `edited_count=${vote.edited_count} added=${vote.added.length} removed=${vote.removed.length}`,
@@ -263,13 +263,13 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
             (field) => !mongoose.Types.ObjectId.isValid(payload[field]),
           );
           if (badId) {
-            context.warn(`Skipping ${payload.event} with invalid ${badId}:`, payload);
+            console.error(`Skipping ${payload.event} with invalid ${badId}:`, payload);
             return;
           }
 
           const on = readInterestAction(payload);
           if (on === null) {
-            context.warn(
+            console.error(
               `Skipping ${payload.event} that names neither create nor delete:`,
               payload,
             );
@@ -286,7 +286,7 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           if (!interest) return;
           // A null count is a write that changed nothing, so no update handed
           // one back - and re-reading it just to log it is a query for nothing.
-          context.log(
+          console.log(
             `Applied ${payload.event} for user ${payload.user_id} on conversations post ${payload.post_id}:`,
             `interested=${interest.active} changed=${interest.changed}`,
             `users_interested_count=${interest.count ?? "unchanged"}`,
@@ -294,11 +294,11 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           break;
         }
         default:
-          context.warn("Skipping message with unsupported event:", payload.event);
+          console.error("Skipping message with unsupported event:", payload.event);
           return;
       }
     } catch (err) {
-      context.error("Error writing post to MongoDB:", err);
+      console.error("Error writing post to MongoDB:", err);
       throw err;
     }
   },
