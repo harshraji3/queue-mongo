@@ -3,7 +3,8 @@ const mongoose = require("mongoose");
 const { connectMongo } = require("../mongo");
 const postsModel = require("../models/communityPosts");
 const usersModel = require("../models/users");
-const { applyReaction, REACTIONS } = require("./storageQueueTriggerLikesAndBookmarkMongo");
+const { REACTIONS } = require("./storageQueueTriggerLikesAndBookmarkMongo");
+const { addReaction, removeReaction } = require("./likeAndBookmarkSchemas/reaction");
 const { deletePost } = require("./storageQueueTriggerDeletePostAndCommentMongo");
 const { applyPollVote } = require("./storageQueueTriggerPollVoteMongo");
 const {
@@ -195,11 +196,24 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
             return;
           }
 
-          const result = await applyReaction(payload, reaction, context);
-          if (!result) return;
+          // Two writers, not one toggle: `on` off the event name picks which.
+          const result = reaction.on
+            ? await addReaction(reaction, payload.post_id, payload.user_id)
+            : await removeReaction(reaction, payload.post_id, payload.user_id);
+          // A null is a post that is gone or removed - addReaction has already
+          // put the row back the way it found it, so there is nothing to retry.
+          if (!result) {
+            context.warn(
+              `Post ${payload.post_id} not found or removed - dropped ${payload.event}.`,
+            );
+            return;
+          }
+          // A null count is a write that changed nothing, so no update handed
+          // one back - and re-reading it just to log it is a query for nothing.
           context.log(
             `Applied ${payload.event} for user ${payload.user_id} on post ${payload.post_id}:`,
-            `${reaction.flagName}=${result.active} ${reaction.counterField}=${result.count}`,
+            `${reaction.flagName}=${result.active} changed=${result.changed}`,
+            `${reaction.counterField}=${result.count ?? "unchanged"}`,
           );
           break;
 
