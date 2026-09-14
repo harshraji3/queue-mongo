@@ -13,6 +13,13 @@ var PollOptionSchema = new Schema({
   votes_count: { type: Number, default: 0, min: 0 },
 });
 
+// How many voters the poll caches inline. community_poll_votes holds the full
+// roll; this is only what a poll read needs to render "you and A, B and N
+// others voted" without a second query. The first VOTERS_CACHE_LIMIT voters
+// fill it and it then stays put - see the note in
+// storageQueueTriggerPollVoteMongo.js for why it is first-N and not most-recent-N.
+const VOTERS_CACHE_LIMIT = 50;
+
 /**
  * A voter and the options they picked, held on the poll itself.
  *
@@ -22,6 +29,11 @@ var PollOptionSchema = new Schema({
  * per voter - and `selected_options` is replaced on a re-vote, in the same
  * update that moves `options[].votes_count`, so the entries and the counts
  * cannot disagree.
+ *
+ * It is a PARTIAL copy: only the first VOTERS_CACHE_LIMIT voters get an entry.
+ * `total_voters` is the real count and can run far ahead of `voters.length`, so
+ * nothing may derive a total, a percentage or a "has this user voted" answer
+ * from this array - the ballots collection answers those.
  *
  * No `_id`: `user_id` already identifies the entry.
  */
@@ -45,8 +57,8 @@ var PollSchema = new Schema(
     options: [PollOptionSchema],
     tags: [{ type: String, trim: true }],
 
-    // Grows by one entry per voter, so it shares the poll's 16MB document
-    // budget - see the note in storageQueueTriggerPollVoteMongo.js.
+    // Read cache of the first VOTERS_CACHE_LIMIT voters. Source of truth is
+    // community_poll_votes, and `total_voters` below is the real count.
     voters: [PollVoterSchema],
 
     // originator: admin (Phase 1) or user (Phase 2)
@@ -75,6 +87,9 @@ var PollSchema = new Schema(
     reviewed_by: { type: Schema.Types.ObjectId, ref: "admin_users" },
     reviewed_at: { type: Date },
 
+    // Every voter, not just the cached ones: this is what `voters.length` is
+    // NOT. It is also the cap check - a vote lands in `voters` only while this
+    // is below VOTERS_CACHE_LIMIT.
     total_voters: { type: Number, default: 0, min: 0 },
     // number of the times users can edit their votes to the poll
     edit_count: { type: Number, default: 1, min: 0, max: 1 },
@@ -87,3 +102,4 @@ var PollSchema = new Schema(
 PollSchema.index({ review_status: 1, start_date: 1, end_date: 1, status: 1 });
 
 module.exports = mongoose.model("community_polls", PollSchema);
+module.exports.VOTERS_CACHE_LIMIT = VOTERS_CACHE_LIMIT;

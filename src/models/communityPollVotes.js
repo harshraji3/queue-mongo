@@ -27,6 +27,16 @@ var PollVoteSchema = new Schema(
     // number of times the user has edited their vote, should be < community_polls.edit_count
     edited_count: { type: Number },
     edited_at: { type: Date },
+
+    // When this ballot's votes were added to the poll's counters.
+    //
+    // Below VOTERS_CACHE_LIMIT the poll's own `voters` entry is the marker that
+    // the counters already moved, and the queue handler filters on it. Past the
+    // cap there is no entry to filter on, so this takes over: it is claimed in
+    // its own update before the counters move, and a redelivery that finds it
+    // already set counts nothing. Null means "not counted yet" and is a state
+    // the handler completes on the next delivery.
+    counted_at: { type: Date, default: null },
   },
   { timestamps: true },
 );

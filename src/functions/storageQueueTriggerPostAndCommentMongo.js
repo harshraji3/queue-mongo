@@ -242,10 +242,14 @@ app.storageQueue("storageQueueTriggerPostAndCommentMongo", {
           // A null means applyPollVote already logged why it declined to write
           // (unchanged ballot, edit cap reached, unknown poll or option).
           if (!vote) return;
+          // `cached` says whether the poll kept an inline `voters` entry for
+          // this voter. False past the cache cap - the vote is still counted
+          // and still balloted, so this is normal on a busy poll, not a fault.
           console.log(
             `Stored poll vote for user ${vote.user_id} on poll ${vote.poll_id}:`,
             `selected_options=[${vote.selected_options.join(", ")}]`,
             `edited_count=${vote.edited_count} added=${vote.added.length} removed=${vote.removed.length}`,
+            `cached=${vote.cached}`,
           );
           break;
         }

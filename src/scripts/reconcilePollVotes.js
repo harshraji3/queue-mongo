@@ -4,10 +4,15 @@
 // than adjusting them - which makes it safe to run repeatedly, and safe to run
 // on data written before `voters` existed.
 //
+// `voters` is a capped read cache - the first VOTERS_CACHE_LIMIT voters only -
+// so this rebuilds it to the same cap rather than to the full roll. The
+// counters and `total_voters` still come from every ballot.
+//
 // Reach for it when a poll and its ballots disagree: the queue handler writes
 // the poll and the ballot as two updates with no transaction across them, so a
 // failure in between can leave one behind. The handler logs a line naming this
-// script when it sees that.
+// script when it sees that. Past the cache cap that gap is wider - there is no
+// voter entry to detect it with - so a busy poll is the likely caller.
 //
 //   node src/scripts/reconcilePollVotes.js              # report only
 //   node src/scripts/reconcilePollVotes.js --apply      # write the fixes
@@ -21,6 +26,8 @@ const mongoose = require("mongoose");
 const { connectMongo } = require("../mongo");
 const pollsModel = require("../models/communityPolls");
 const pollVotesModel = require("../models/communityPollVotes");
+
+const { VOTERS_CACHE_LIMIT } = pollsModel;
 
 function parseArgs(argv) {
   const pollAt = argv.indexOf("--poll");
@@ -55,13 +62,20 @@ function tally(poll, ballots) {
 
     for (const id of live) counts.set(id, counts.get(id) + 1);
 
-    voters.push({
-      user_id: ballot.user_id,
-      selected_options: live.map((id) => new mongoose.Types.ObjectId(id)),
-      edited_count: Number(ballot.edited_count) || 0,
-      voted_at: ballot.createdAt,
-      ...(ballot.edited_at ? { edited_at: ballot.edited_at } : {}),
-    });
+    // Every ballot moves the counters; only the first VOTERS_CACHE_LIMIT get an
+    // inline entry. `ballots` arrives oldest-first, so taking the head here
+    // rebuilds the same set of voters the handler would have cached - the cache
+    // is first-N, and a reconcile that reshuffled it would strand entries the
+    // handler's redelivery guard depends on.
+    if (voters.length < VOTERS_CACHE_LIMIT) {
+      voters.push({
+        user_id: ballot.user_id,
+        selected_options: live.map((id) => new mongoose.Types.ObjectId(id)),
+        edited_count: Number(ballot.edited_count) || 0,
+        voted_at: ballot.createdAt,
+        ...(ballot.edited_at ? { edited_at: ballot.edited_at } : {}),
+      });
+    }
   }
 
   return { counts, voters, orphaned, totalVoters: ballots.length };
@@ -129,11 +143,14 @@ async function reconcile({ apply, pollId }) {
   let repaired = 0;
 
   for (const poll of polls) {
+    // Oldest first, because the inline cache keeps the first VOTERS_CACHE_LIMIT
+    // voters and `tally` takes them off the head of this list.
     const ballots = await pollVotesModel
       .find(
         { poll_id: poll._id },
         { user_id: 1, selected_options: 1, edited_at: 1, createdAt: 1 },
       )
+      .sort({ createdAt: 1, _id: 1 })
       .lean();
 
     const expected = tally(poll, ballots);
@@ -171,6 +188,20 @@ async function reconcile({ apply, pollId }) {
       },
     );
     if (result.modifiedCount) repaired += 1;
+
+    // The counts just written include every ballot, so any the handler had not
+    // counted yet must not be counted a second time when their message is
+    // redelivered. `counted_at` is exactly the "already in the counters" flag
+    // the uncached path filters on, so stamping the stragglers closes that.
+    // A missing field matches `null` here, which is what makes this work on
+    // ballots written before the field existed.
+    const stamped = await pollVotesModel.updateMany(
+      { poll_id: poll._id, counted_at: null },
+      { $currentDate: { counted_at: true } },
+    );
+    if (stamped.modifiedCount) {
+      console.log(`  marked ${stamped.modifiedCount} ballot(s) as counted`);
+    }
     console.log(`  repaired`);
   }
 
